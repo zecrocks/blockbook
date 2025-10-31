@@ -1,6 +1,7 @@
 package zec
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"math/big"
@@ -108,14 +109,102 @@ func GetChainParams(chain string) *chaincfg.Params {
 	}
 }
 
+// Magic marker to identify appended shieldedPoolValue data
+var shieldedPoolValueMarker = []byte{0x5A, 0x45, 0x43, 0x31} // "ZEC1" in hex
+
 // PackTx packs transaction to byte array using protobuf
+// For Zcash, we also append the shieldedPoolValue to preserve it through cache serialization
 func (p *ZCashParser) PackTx(tx *bchain.Tx, height uint32, blockTime int64) ([]byte, error) {
-	return p.baseparser.PackTx(tx, height, blockTime)
+	// Pack the base transaction
+	packed, err := p.baseparser.PackTx(tx, height, blockTime)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract and append shieldedPoolValue if present
+	if tx.CoinSpecificData != nil {
+		if coinSpecificMap, ok := tx.CoinSpecificData.(map[string]interface{}); ok {
+			if shieldedPoolValue, exists := coinSpecificMap["shieldedPoolValue"]; exists {
+				if shieldedBigInt, ok := shieldedPoolValue.(*big.Int); ok {
+					// Append shieldedPoolValue as: [4-byte marker][4-byte length][big.Int bytes]
+					shieldedBytes := shieldedBigInt.Bytes()
+					lengthBytes := make([]byte, 4)
+					binary.BigEndian.PutUint32(lengthBytes, uint32(len(shieldedBytes)))
+					packed = append(packed, shieldedPoolValueMarker...)
+					packed = append(packed, lengthBytes...)
+					packed = append(packed, shieldedBytes...)
+				}
+			}
+		}
+	}
+
+	return packed, nil
 }
 
 // UnpackTx unpacks transaction from protobuf byte array
+// For Zcash, we also extract and restore the shieldedPoolValue if it was appended
 func (p *ZCashParser) UnpackTx(buf []byte) (*bchain.Tx, uint32, error) {
-	return p.baseparser.UnpackTx(buf)
+	// Minimum size for appended data: 4 (marker) + 4 (length) = 8 bytes
+	if len(buf) < 8 {
+		return p.baseparser.UnpackTx(buf)
+	}
+
+	// Check for the magic marker at the end
+	markerStart := len(buf) - len(shieldedPoolValueMarker)
+	if markerStart < 0 {
+		return p.baseparser.UnpackTx(buf)
+	}
+
+	// Look for the marker from the end, scanning backwards
+	foundMarker := false
+	markerPos := -1
+	for i := len(buf) - len(shieldedPoolValueMarker); i >= 0; i-- {
+		if i+len(shieldedPoolValueMarker) <= len(buf) {
+			if string(buf[i:i+len(shieldedPoolValueMarker)]) == string(shieldedPoolValueMarker) {
+				foundMarker = true
+				markerPos = i
+				break
+			}
+		}
+	}
+
+	if !foundMarker {
+		// No marker found, unpack normally
+		return p.baseparser.UnpackTx(buf)
+	}
+
+	// Extract the proto data (everything before the marker)
+	protoBuf := buf[:markerPos]
+	tx, height, err := p.baseparser.UnpackTx(protoBuf)
+	if err != nil {
+		// If unpacking fails, try unpacking the whole buffer (might be old format)
+		return p.baseparser.UnpackTx(buf)
+	}
+
+	// Extract the appended shieldedPoolValue
+	// Format: [marker][4-byte length][data]
+	dataStart := markerPos + len(shieldedPoolValueMarker)
+	if dataStart+4 > len(buf) {
+		return tx, height, nil
+	}
+
+	length := binary.BigEndian.Uint32(buf[dataStart : dataStart+4])
+	if length > 32 || dataStart+4+int(length) > len(buf) {
+		// Invalid length, return transaction without CoinSpecificData
+		return tx, height, nil
+	}
+
+	shieldedBytes := buf[dataStart+4 : dataStart+4+int(length)]
+	shieldedPoolValue := new(big.Int).SetBytes(shieldedBytes)
+
+	// Restore CoinSpecificData
+	tx.CoinSpecificData = map[string]interface{}{
+		"shieldedPoolValue": shieldedPoolValue,
+	}
+
+	glog.V(2).Infof("ZCash UnpackTx: restored shieldedPoolValue=%s for txid=%s", shieldedPoolValue.String(), tx.Txid)
+
+	return tx, height, nil
 }
 
 // ParseTxFromJson parses JSON message containing transaction and returns Tx struct
