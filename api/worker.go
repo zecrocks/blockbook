@@ -418,6 +418,21 @@ func (w *Worker) getTransactionFromBchainTx(bchainTx *bchain.Tx, height int, spe
 	if w.chainType == bchain.ChainBitcoinType {
 		// for coinbase transactions valIn is 0
 		feesSat.Sub(&valInSat, &valOutSat)
+
+		// Handle Zcash shielded pool values in fee calculation
+		if bchainTx.CoinSpecificData != nil {
+			if coinSpecificMap, ok := bchainTx.CoinSpecificData.(map[string]interface{}); ok {
+				if shieldedPoolValue, exists := coinSpecificMap["shieldedPoolValue"]; exists {
+					if shieldedBigInt, ok := shieldedPoolValue.(*big.Int); ok {
+						// Add shielded pool value to the fee calculation
+						// Positive values represent net transfer out of shielded pool (treated as input)
+						// Negative values represent net transfer into shielded pool (treated as output)
+						feesSat.Add(&feesSat, shieldedBigInt)
+					}
+				}
+			}
+		}
+
 		if feesSat.Sign() == -1 {
 			feesSat.SetUint64(0)
 		}
@@ -584,6 +599,21 @@ func (w *Worker) GetTransactionFromMempoolTx(mempoolTx *bchain.MempoolTx) (*Tx, 
 	if w.chainType == bchain.ChainBitcoinType {
 		// for coinbase transactions valIn is 0
 		feesSat.Sub(&valInSat, &valOutSat)
+
+		// Handle Zcash shielded pool values in fee calculation for mempool transactions
+		if mempoolTx.CoinSpecificData != nil {
+			if coinSpecificMap, ok := mempoolTx.CoinSpecificData.(map[string]interface{}); ok {
+				if shieldedPoolValue, exists := coinSpecificMap["shieldedPoolValue"]; exists {
+					if shieldedBigInt, ok := shieldedPoolValue.(*big.Int); ok {
+						// Add shielded pool value to the fee calculation
+						// Positive values represent net transfer out of shielded pool (treated as input)
+						// Negative values represent net transfer into shielded pool (treated as output)
+						feesSat.Add(&feesSat, shieldedBigInt)
+					}
+				}
+			}
+		}
+
 		if feesSat.Sign() == -1 {
 			feesSat.SetUint64(0)
 		}

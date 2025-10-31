@@ -246,3 +246,130 @@ func TestUnpackTx(t *testing.T) {
 		})
 	}
 }
+
+func TestZCashShieldedFeeCalculation(t *testing.T) {
+	parser := NewZCashParser(GetChainParams("main"), &btc.Configuration{})
+
+	// Test transaction JSON with shielded components (similar to the example from the issue)
+	// This represents a shielding transaction where value is transferred to the shielded pool
+	testTxJSON := `{
+		"txid": "63679fc7f9628bc5065636813ee6adbe89f6dfdf3635524ac0792b344a9fd588",
+		"version": 4,
+		"locktime": 0,
+		"vin": [
+			{
+				"txid": "prev_txid",
+				"vout": 0,
+				"scriptSig": {"hex": ""},
+				"sequence": 4294967295
+			}
+		],
+		"vout": [],
+		"valueBalanceSapling": "-7256024835"
+	}`
+
+	tx, err := parser.ParseTxFromJson([]byte(testTxJSON))
+	if err != nil {
+		t.Errorf("ParseTxFromJson failed: %v", err)
+		return
+	}
+
+	// Check that CoinSpecificData contains our shielded pool value
+	if tx.CoinSpecificData == nil {
+		t.Error("CoinSpecificData should not be nil")
+		return
+	}
+
+	coinSpecificMap, ok := tx.CoinSpecificData.(map[string]interface{})
+	if !ok {
+		t.Error("CoinSpecificData should be a map")
+		return
+	}
+
+	shieldedPoolValue, exists := coinSpecificMap["shieldedPoolValue"]
+	if !exists {
+		t.Error("shieldedPoolValue should exist in CoinSpecificData")
+		return
+	}
+
+	shieldedBigInt, ok := shieldedPoolValue.(*big.Int)
+	if !ok {
+		t.Error("shieldedPoolValue should be a *big.Int")
+		return
+	}
+
+	// The valueBalanceSapling is -7256024835, which means this amount is going into the shielded pool
+	// This should be treated as an output for fee calculation purposes
+	expected := big.NewInt(-7256024835)
+	if shieldedBigInt.Cmp(expected) != 0 {
+		t.Errorf("Expected shieldedPoolValue %v, got %v", expected, shieldedBigInt)
+	}
+}
+
+func TestZCashTransparentTransactionFeeCalculation(t *testing.T) {
+	parser := NewZCashParser(GetChainParams("main"), &btc.Configuration{})
+
+	// Test transparent-only ZCash transaction (no shielded components)
+	transparentTxJSON := `{
+		"txid": "transparenttxid123",
+		"version": 4,
+		"locktime": 0,
+		"vin": [
+			{
+				"txid": "prev_txid",
+				"vout": 0,
+				"scriptSig": {"hex": ""},
+				"sequence": 4294967295
+			}
+		],
+		"vout": [
+			{
+				"value": "10.0",
+				"n": 0,
+				"scriptPubKey": {
+					"hex": "76a914...",
+					"addresses": ["t1Address..."]
+				}
+			}
+		]
+	}`
+
+	tx, err := parser.ParseTxFromJson([]byte(transparentTxJSON))
+	if err != nil {
+		t.Errorf("ParseTxFromJson failed for transparent tx: %v", err)
+		return
+	}
+
+	// Check that CoinSpecificData contains shielded pool value of 0 for transparent tx
+	coinSpecificMap, ok := tx.CoinSpecificData.(map[string]interface{})
+	if !ok {
+		t.Error("CoinSpecificData should be a map for transparent tx")
+		return
+	}
+
+	shieldedPoolValue, exists := coinSpecificMap["shieldedPoolValue"]
+	if !exists {
+		t.Error("shieldedPoolValue should exist even for transparent tx")
+		return
+	}
+
+	shieldedBigInt, ok := shieldedPoolValue.(*big.Int)
+	if !ok {
+		t.Error("shieldedPoolValue should be a *big.Int for transparent tx")
+		return
+	}
+
+	// For transparent transactions, shielded pool value should be 0
+	expected := big.NewInt(0)
+	if shieldedBigInt.Cmp(expected) != 0 {
+		t.Errorf("Expected shieldedPoolValue 0 for transparent tx, got %v", shieldedBigInt)
+	}
+
+	// Verify that the transaction still has correct vin/vout from Bitcoin parser
+	if len(tx.Vin) != 1 {
+		t.Errorf("Expected 1 input, got %d", len(tx.Vin))
+	}
+	if len(tx.Vout) != 1 {
+		t.Errorf("Expected 1 output, got %d", len(tx.Vout))
+	}
+}
