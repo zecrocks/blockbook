@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/big"
 
+	"github.com/golang/glog"
 	"github.com/martinboehm/btcd/wire"
 	"github.com/martinboehm/btcutil/chaincfg"
 	"github.com/trezor/blockbook/bchain"
@@ -133,6 +134,10 @@ func (p *ZCashParser) ParseTxFromJson(msg json.RawMessage) (*bchain.Tx, error) {
 	// Calculate the shielded pool contribution to fee calculation
 	shieldedPoolValue := big.NewInt(0)
 
+	// Debug logging
+	glog.V(2).Infof("ZCash ParseTxFromJson: txid=%s, vjoinsplit=%d, valueBalanceSapling=%s, valueBalanceOrchard=%s",
+		tx.Txid, len(zcashData.VJoinSplit), zcashData.ValueBalanceSapling, zcashData.ValueBalanceOrchard)
+
 	// Process JoinSplit descriptions (Sprout shielded pool)
 	// Note: vpub_old and vpub_new are already in zatoshis, not decimal ZEC
 	for _, js := range zcashData.VJoinSplit {
@@ -180,6 +185,8 @@ func (p *ZCashParser) ParseTxFromJson(msg json.RawMessage) (*bchain.Tx, error) {
 		"shieldedPoolValue": shieldedPoolValue,
 	}
 	tx.CoinSpecificData = coinSpecificData
+
+	glog.V(2).Infof("ZCash ParseTxFromJson: txid=%s, final shieldedPoolValue=%s", tx.Txid, shieldedPoolValue.String())
 
 	return tx, nil
 }
