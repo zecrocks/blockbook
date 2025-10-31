@@ -135,7 +135,7 @@ func (p *ZCashParser) ParseTxFromJson(msg json.RawMessage) (*bchain.Tx, error) {
 	shieldedPoolValue := big.NewInt(0)
 
 	// Debug logging
-	glog.V(2).Infof("ZCash ParseTxFromJson: txid=%s, vjoinsplit=%d, valueBalanceSapling=%s, valueBalanceOrchard=%s",
+	glog.Infof("ZCash ParseTxFromJson: txid=%s, vjoinsplit=%d, valueBalanceSapling=%s, valueBalanceOrchard=%s",
 		tx.Txid, len(zcashData.VJoinSplit), zcashData.ValueBalanceSapling, zcashData.ValueBalanceOrchard)
 
 	// Process JoinSplit descriptions (Sprout shielded pool)
@@ -186,7 +186,7 @@ func (p *ZCashParser) ParseTxFromJson(msg json.RawMessage) (*bchain.Tx, error) {
 	}
 	tx.CoinSpecificData = coinSpecificData
 
-	glog.V(2).Infof("ZCash ParseTxFromJson: txid=%s, final shieldedPoolValue=%s", tx.Txid, shieldedPoolValue.String())
+	glog.Infof("ZCash ParseTxFromJson: txid=%s, final shieldedPoolValue=%s", tx.Txid, shieldedPoolValue.String())
 
 	return tx, nil
 }

@@ -421,27 +421,27 @@ func (w *Worker) getTransactionFromBchainTx(bchainTx *bchain.Tx, height int, spe
 
 		// Handle Zcash shielded pool values in fee calculation
 		if bchainTx.CoinSpecificData != nil {
-			glog.V(2).Infof("ZCash fee calc: txid=%s, CoinSpecificData type=%T", bchainTx.Txid, bchainTx.CoinSpecificData)
+			glog.Infof("ZCash fee calc: txid=%s, CoinSpecificData type=%T", bchainTx.Txid, bchainTx.CoinSpecificData)
 			if coinSpecificMap, ok := bchainTx.CoinSpecificData.(map[string]interface{}); ok {
 				if shieldedPoolValue, exists := coinSpecificMap["shieldedPoolValue"]; exists {
 					if shieldedBigInt, ok := shieldedPoolValue.(*big.Int); ok {
-						glog.V(2).Infof("ZCash fee calc: txid=%s, before fee=%s, shieldedPoolValue=%s", bchainTx.Txid, feesSat.String(), shieldedBigInt.String())
+						glog.Infof("ZCash fee calc: txid=%s, before fee=%s, shieldedPoolValue=%s", bchainTx.Txid, feesSat.String(), shieldedBigInt.String())
 						// Add shielded pool value to the fee calculation
 						// Positive values represent net transfer out of shielded pool (treated as input)
 						// Negative values represent net transfer into shielded pool (treated as output)
 						feesSat.Add(&feesSat, shieldedBigInt)
-						glog.V(2).Infof("ZCash fee calc: txid=%s, after fee=%s", bchainTx.Txid, feesSat.String())
+						glog.Infof("ZCash fee calc: txid=%s, after fee=%s", bchainTx.Txid, feesSat.String())
 					} else {
-						glog.V(2).Infof("ZCash fee calc: txid=%s, shieldedPoolValue wrong type: %T", bchainTx.Txid, shieldedPoolValue)
+						glog.Infof("ZCash fee calc: txid=%s, shieldedPoolValue wrong type: %T", bchainTx.Txid, shieldedPoolValue)
 					}
 				} else {
-					glog.V(2).Infof("ZCash fee calc: txid=%s, shieldedPoolValue not found in map", bchainTx.Txid)
+					glog.Infof("ZCash fee calc: txid=%s, shieldedPoolValue not found in map", bchainTx.Txid)
 				}
 			} else {
-				glog.V(2).Infof("ZCash fee calc: txid=%s, CoinSpecificData not a map", bchainTx.Txid)
+				glog.Infof("ZCash fee calc: txid=%s, CoinSpecificData not a map", bchainTx.Txid)
 			}
 		} else {
-			glog.V(2).Infof("ZCash fee calc: txid=%s, CoinSpecificData is nil", bchainTx.Txid)
+			glog.Infof("ZCash fee calc: txid=%s, CoinSpecificData is nil", bchainTx.Txid)
 		}
 
 		if feesSat.Sign() == -1 {
@@ -613,16 +613,16 @@ func (w *Worker) GetTransactionFromMempoolTx(mempoolTx *bchain.MempoolTx) (*Tx, 
 
 		// Handle Zcash shielded pool values in fee calculation for mempool transactions
 		if mempoolTx.CoinSpecificData != nil {
-			glog.V(2).Infof("ZCash mempool fee calc: txid=%s, CoinSpecificData type=%T", mempoolTx.Txid, mempoolTx.CoinSpecificData)
+			glog.Infof("ZCash mempool fee calc: txid=%s, CoinSpecificData type=%T", mempoolTx.Txid, mempoolTx.CoinSpecificData)
 			if coinSpecificMap, ok := mempoolTx.CoinSpecificData.(map[string]interface{}); ok {
 				if shieldedPoolValue, exists := coinSpecificMap["shieldedPoolValue"]; exists {
 					if shieldedBigInt, ok := shieldedPoolValue.(*big.Int); ok {
-						glog.V(2).Infof("ZCash mempool fee calc: txid=%s, before fee=%s, shieldedPoolValue=%s", mempoolTx.Txid, feesSat.String(), shieldedBigInt.String())
+						glog.Infof("ZCash mempool fee calc: txid=%s, before fee=%s, shieldedPoolValue=%s", mempoolTx.Txid, feesSat.String(), shieldedBigInt.String())
 						// Add shielded pool value to the fee calculation
 						// Positive values represent net transfer out of shielded pool (treated as input)
 						// Negative values represent net transfer into shielded pool (treated as output)
 						feesSat.Add(&feesSat, shieldedBigInt)
-						glog.V(2).Infof("ZCash mempool fee calc: txid=%s, after fee=%s", mempoolTx.Txid, feesSat.String())
+						glog.Infof("ZCash mempool fee calc: txid=%s, after fee=%s", mempoolTx.Txid, feesSat.String())
 					}
 				}
 			}
