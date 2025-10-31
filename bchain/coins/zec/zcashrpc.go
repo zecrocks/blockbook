@@ -117,20 +117,12 @@ func (z *ZCashRPC) GetChainInfo() (*bchain.ChainInfo, error) {
 
 // GetBlock returns block with given hash.
 func (z *ZCashRPC) GetBlock(hash string, height uint32) (*bchain.Block, error) {
-	type rpcBlock struct {
-		bchain.BlockHeader
-		Txs []bchain.Tx `json:"tx"`
-	}
 	type rpcBlockTxids struct {
 		Txids []string `json:"tx"`
 	}
 	type resGetBlockV1 struct {
 		Error  *bchain.RPCError `json:"error"`
 		Result rpcBlockTxids    `json:"result"`
-	}
-	type resGetBlockV2 struct {
-		Error  *bchain.RPCError `json:"error"`
-		Result rpcBlock         `json:"result"`
 	}
 
 	var err error
@@ -142,7 +134,6 @@ func (z *ZCashRPC) GetBlock(hash string, height uint32) (*bchain.Block, error) {
 	}
 
 	var rawResponse json.RawMessage
-	resV2 := resGetBlockV2{}
 	req := btc.CmdGetBlock{Method: "getblock"}
 	req.Params.BlockHash = hash
 	req.Params.Verbosity = 2
@@ -152,17 +143,39 @@ func (z *ZCashRPC) GetBlock(hash string, height uint32) (*bchain.Block, error) {
 	}
 	// hack for ZCash, where the field "valueZat" is used instead of "valueSat"
 	rawResponse = bytes.ReplaceAll(rawResponse, []byte(`"valueZat"`), []byte(`"valueSat"`))
-	err = json.Unmarshal(rawResponse, &resV2)
+
+	// Parse the response to get block header and raw transaction JSON
+	type rpcBlockWithRawTxs struct {
+		bchain.BlockHeader
+		Txs []json.RawMessage `json:"tx"`
+	}
+	type resGetBlockV2Raw struct {
+		Error  *bchain.RPCError   `json:"error"`
+		Result rpcBlockWithRawTxs `json:"result"`
+	}
+	resV2Raw := resGetBlockV2Raw{}
+	err = json.Unmarshal(rawResponse, &resV2Raw)
 	if err != nil {
 		return nil, errors.Annotatef(err, "hash %v", hash)
 	}
 
-	if resV2.Error != nil {
-		return nil, errors.Annotatef(resV2.Error, "hash %v", hash)
+	if resV2Raw.Error != nil {
+		return nil, errors.Annotatef(resV2Raw.Error, "hash %v", hash)
 	}
+
+	// Parse each transaction through ParseTxFromJson to calculate shielded pool values
+	parsedTxs := make([]bchain.Tx, len(resV2Raw.Result.Txs))
+	for i, rawTx := range resV2Raw.Result.Txs {
+		tx, err := z.Parser.ParseTxFromJson(rawTx)
+		if err != nil {
+			return nil, errors.Annotatef(err, "hash %v, tx index %d", hash, i)
+		}
+		parsedTxs[i] = *tx
+	}
+
 	block := &bchain.Block{
-		BlockHeader: resV2.Result.BlockHeader,
-		Txs:         resV2.Result.Txs,
+		BlockHeader: resV2Raw.Result.BlockHeader,
+		Txs:         parsedTxs,
 	}
 
 	// transactions fetched in block with verbosity 2 do not contain txids, so we need to get it separately
