@@ -250,6 +250,26 @@ func (z *ZCashRPC) GetTransactionForMempool(txid string) (*bchain.Tx, error) {
 	return z.GetTransaction(txid)
 }
 
+// GetTransactionSpecific returns json as returned by backend, with all coin specific data
+func (z *ZCashRPC) GetTransactionSpecific(tx *bchain.Tx) (json.RawMessage, error) {
+	// Check if CoinSpecificData contains raw JSON
+	if tx.CoinSpecificData != nil {
+		if coinSpecificMap, ok := tx.CoinSpecificData.(map[string]interface{}); ok {
+			if rawJson, exists := coinSpecificMap["rawJson"]; exists {
+				if rawJsonBytes, ok := rawJson.(json.RawMessage); ok {
+					return rawJsonBytes, nil
+				}
+			}
+		}
+		// If CoinSpecificData is raw JSON, return it
+		if rawJson, ok := tx.CoinSpecificData.(json.RawMessage); ok {
+			return rawJson, nil
+		}
+	}
+	// Fallback: fetch raw transaction from backend
+	return z.getRawTransaction(tx.Txid)
+}
+
 // GetMempoolEntry returns mempool data for given transaction
 func (z *ZCashRPC) GetMempoolEntry(txid string) (*bchain.MempoolEntry, error) {
 	return nil, errors.New("GetMempoolEntry: not implemented")
