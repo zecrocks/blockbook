@@ -195,7 +195,11 @@ func (z *ZCashRPC) GetTransaction(txid string) (*bchain.Tx, error) {
 	}
 	tx.Blocktime = tx.Time
 	tx.Txid = txid
-	tx.CoinSpecificData = r
+	// Don't overwrite CoinSpecificData if it was already set by the parser (contains shielded pool data)
+	// If it wasn't set, use the raw JSON as fallback
+	if tx.CoinSpecificData == nil {
+		tx.CoinSpecificData = r
+	}
 	return tx, nil
 }
 
