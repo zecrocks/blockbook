@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
+	"strconv"
 
 	"github.com/golang/glog"
 	"github.com/martinboehm/btcd/wire"
@@ -61,8 +62,10 @@ type JoinSplit struct {
 // ZCashSpecificData contains Zcash-specific transaction fields for shielded pools
 type ZCashSpecificData struct {
 	VJoinSplit          []JoinSplit       `json:"vjoinsplit,omitempty"`
-	ValueBalanceSapling common.JSONNumber `json:"valueBalanceSapling,omitempty"`
-	ValueBalanceOrchard common.JSONNumber `json:"valueBalanceOrchard,omitempty"`
+	ValueBalance        common.JSONNumber `json:"valueBalance,omitempty"`        // Net value balance (Sapling, can be positive or negative)
+	ValueBalanceZat     common.JSONNumber `json:"valueBalanceZat,omitempty"`     // Net value balance in zatoshis
+	ValueBalanceSapling common.JSONNumber `json:"valueBalanceSapling,omitempty"` // Legacy field name (for compatibility)
+	ValueBalanceOrchard common.JSONNumber `json:"valueBalanceOrchard,omitempty"` // Orchard pool balance (if present)
 }
 
 // ZCashParser handle
@@ -135,8 +138,8 @@ func (p *ZCashParser) ParseTxFromJson(msg json.RawMessage) (*bchain.Tx, error) {
 	shieldedPoolValue := big.NewInt(0)
 
 	// Debug logging
-	glog.Infof("ZCash ParseTxFromJson: txid=%s, vjoinsplit=%d, valueBalanceSapling=%s, valueBalanceOrchard=%s",
-		tx.Txid, len(zcashData.VJoinSplit), zcashData.ValueBalanceSapling, zcashData.ValueBalanceOrchard)
+	glog.Infof("ZCash ParseTxFromJson: txid=%s, vjoinsplit=%d, valueBalance=%s, valueBalanceZat=%s, valueBalanceSapling=%s, valueBalanceOrchard=%s",
+		tx.Txid, len(zcashData.VJoinSplit), zcashData.ValueBalance, zcashData.ValueBalanceZat, zcashData.ValueBalanceSapling, zcashData.ValueBalanceOrchard)
 
 	// Process JoinSplit descriptions (Sprout shielded pool)
 	// Note: vpub_old and vpub_new are already in zatoshis, not decimal ZEC
@@ -160,7 +163,28 @@ func (p *ZCashParser) ParseTxFromJson(msg json.RawMessage) (*bchain.Tx, error) {
 		}
 	}
 
-	// Process Sapling pool balance (already in zatoshis)
+	// Process valueBalanceZat (primary field - value balance in zatoshis)
+	// This represents the net value balance for Sapling shielded pool
+	// Positive values = net transfer OUT of shielded pool (treated as input)
+	// Negative values = net transfer INTO shielded pool (treated as output)
+	if zcashData.ValueBalanceZat != "" {
+		valueBalance := new(big.Int)
+		if _, ok := valueBalance.SetString(string(zcashData.ValueBalanceZat), 10); !ok {
+			return nil, errors.New("failed to parse valueBalanceZat")
+		}
+		shieldedPoolValue.Add(shieldedPoolValue, valueBalance)
+	} else if zcashData.ValueBalance != "" {
+		// Fallback to valueBalance if valueBalanceZat is not present
+		// Need to convert from decimal ZEC to zatoshis (multiply by 100000000)
+		valueBalanceFloat, err := strconv.ParseFloat(string(zcashData.ValueBalance), 64)
+		if err != nil {
+			return nil, errors.New("failed to parse valueBalance as float")
+		}
+		valueBalanceSat := big.NewInt(int64(valueBalanceFloat * 100000000))
+		shieldedPoolValue.Add(shieldedPoolValue, valueBalanceSat)
+	}
+
+	// Process legacy Sapling pool balance field (for compatibility)
 	if zcashData.ValueBalanceSapling != "" {
 		saplingBalance := new(big.Int)
 		if _, ok := saplingBalance.SetString(string(zcashData.ValueBalanceSapling), 10); !ok {
