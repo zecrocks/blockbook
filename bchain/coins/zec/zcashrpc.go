@@ -196,6 +196,7 @@ func (z *ZCashRPC) GetBlock(hash string, height uint32) (*bchain.Block, error) {
 
 // GetTransaction returns a transaction by the transaction ID
 func (z *ZCashRPC) GetTransaction(txid string) (*bchain.Tx, error) {
+	glog.Infof("ZCash GetTransaction: fetching txid=%s", txid)
 	r, err := z.getRawTransaction(txid)
 	if err != nil {
 		return nil, err
@@ -211,7 +212,10 @@ func (z *ZCashRPC) GetTransaction(txid string) (*bchain.Tx, error) {
 	// Don't overwrite CoinSpecificData if it was already set by the parser (contains shielded pool data)
 	// If it wasn't set, use the raw JSON as fallback
 	if tx.CoinSpecificData == nil {
+		glog.Warningf("ZCash GetTransaction: txid=%s, CoinSpecificData is nil after ParseTxFromJson!", txid)
 		tx.CoinSpecificData = r
+	} else {
+		glog.Infof("ZCash GetTransaction: txid=%s, CoinSpecificData type=%T", txid, tx.CoinSpecificData)
 	}
 	return tx, nil
 }
