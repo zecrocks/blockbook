@@ -214,6 +214,18 @@ func (w *Worker) GetRawTransaction(txid string) (string, error) {
 
 // getTransaction reads transaction data from txid
 func (w *Worker) getTransaction(txid string, spendingTxs bool, specificJSON bool, addresses map[string]struct{}) (*Tx, error) {
+	// TEMPORARY: Always delete from cache and fetch fresh when serving to users via API/HTTP
+	// This ensures correct CoinSpecificData for Zcash shielded pool fee calculation
+	// TODO: Remove this once PackTx/UnpackTx properly handles CoinSpecificData in cache
+	if w.txCache != nil {
+		err := w.db.DeleteTx(txid)
+		if err != nil {
+			glog.V(2).Infof("getTransaction: error deleting txid=%s from cache (may not exist): %v", txid, err)
+		} else {
+			glog.Infof("getTransaction: deleted txid=%s from cache, will fetch fresh for API request", txid)
+		}
+	}
+
 	bchainTx, height, err := w.txCache.GetTransaction(txid)
 	if err != nil {
 		if err == bchain.ErrTxNotFound {

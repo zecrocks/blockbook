@@ -201,6 +201,8 @@ func (z *ZCashRPC) GetTransaction(txid string) (*bchain.Tx, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Log the raw JSON to debug shielded pool fields
+	glog.Infof("ZCash GetTransaction: raw JSON for txid=%s: %s", txid, string(r))
 	// hack for ZCash, where the field "valueZat" is used instead of "valueSat"
 	r = bytes.ReplaceAll(r, []byte(`"valueZat"`), []byte(`"valueSat"`))
 	tx, err := z.Parser.ParseTxFromJson(r)
