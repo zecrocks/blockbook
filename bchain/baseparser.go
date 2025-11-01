@@ -46,8 +46,20 @@ const zeros = "0000000000000000000000000000000000000000"
 func (p *BaseParser) AmountToBigInt(n common.JSONNumber) (big.Int, error) {
 	var r big.Int
 	s := string(n)
+
+	// Trim whitespace
+	s = strings.TrimSpace(s)
+
+	// Handle empty string or null as zero
+	if s == "" || s == "null" {
+		return r, nil
+	}
+
 	i := strings.IndexByte(s, '.')
-	d := min(p.AmountDecimalPoint, len(zeros))
+	d := p.AmountDecimalPoint
+	if d > len(zeros) {
+		d = len(zeros)
+	}
 	if i == -1 {
 		s = s + zeros[:d]
 	} else {
@@ -59,7 +71,7 @@ func (p *BaseParser) AmountToBigInt(n common.JSONNumber) (big.Int, error) {
 		}
 	}
 	if _, ok := r.SetString(s, 10); !ok {
-		return r, errors.New("AmountToBigInt: failed to convert")
+		return r, errors.Errorf("AmountToBigInt: failed to convert value %q (original: %q)", s, string(n))
 	}
 	return r, nil
 }
@@ -119,7 +131,7 @@ func (p *BaseParser) ParseTxFromJson(msg json.RawMessage) (*Tx, error) {
 		// convert vout.JsonValue to big.Int and clear it, it is only temporary value used for unmarshal
 		vout.ValueSat, err = p.AmountToBigInt(vout.JsonValue)
 		if err != nil {
-			return nil, err
+			return nil, errors.Annotatef(err, "vout index %d", i)
 		}
 		vout.JsonValue = ""
 	}
