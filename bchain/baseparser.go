@@ -55,6 +55,29 @@ func (p *BaseParser) AmountToBigInt(n common.JSONNumber) (big.Int, error) {
 		return r, nil
 	}
 
+	// Handle scientific notation (e.g., "9.87e-6")
+	if strings.ContainsAny(s, "eE") {
+		// Use big.Float with high precision to handle scientific notation, then convert to big.Int
+		// Set precision to 256 bits to avoid rounding errors
+		f := new(big.Float).SetPrec(256)
+		if _, ok := f.SetString(s); !ok {
+			return r, errors.Errorf("AmountToBigInt: failed to parse scientific notation %q", s)
+		}
+		
+		// Multiply by 10^AmountDecimalPoint to get the integer representation
+		d := p.AmountDecimalPoint
+		multiplier := new(big.Float).SetPrec(256).SetInt64(1)
+		ten := new(big.Float).SetPrec(256).SetInt64(10)
+		for i := 0; i < d; i++ {
+			multiplier.Mul(multiplier, ten)
+		}
+		f.Mul(f, multiplier)
+		
+		// Convert to big.Int (truncating any remaining decimals)
+		f.Int(&r)
+		return r, nil
+	}
+
 	i := strings.IndexByte(s, '.')
 	d := p.AmountDecimalPoint
 	if d > len(zeros) {
