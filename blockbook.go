@@ -257,7 +257,8 @@ func mainWithExitCode() int {
 					glog.Error("StoreInternalState: ", err)
 					return exitCodeFatal
 				}
-				glog.Warning("internalState: database state reset to closed. Run with -sync to resync and fix any inconsistencies.")
+				glog.Info("internalState: database state reset to closed. Run with -sync to resync and fix any inconsistencies.")
+				return exitCodeOK
 			} else {
 				glog.Error("internalState: database is in inconsistent state and cannot be used")
 				glog.Error("internalState: database was likely interrupted during bulk import (e.g., killed by OOM killer)")
