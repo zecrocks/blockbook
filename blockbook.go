@@ -51,10 +51,11 @@ var (
 	blockUntil     = flag.Int("blockuntil", -1, "height of the final block")
 	rollbackHeight = flag.Int("rollback", -1, "rollback to the given height and quit")
 
-	synchronize = flag.Bool("sync", false, "synchronizes until tip, if together with zeromq, keeps index synchronized")
-	repair      = flag.Bool("repair", false, "repair the database")
-	fixUtxo     = flag.Bool("fixutxo", false, "check and fix utxo db and exit")
-	prof        = flag.String("prof", "", "http server binding [address]:port of the interface to profiling data /debug/pprof/ (default no profiling)")
+	synchronize            = flag.Bool("sync", false, "synchronizes until tip, if together with zeromq, keeps index synchronized")
+	repair                 = flag.Bool("repair", false, "repair the database and reset inconsistent state if present")
+	fixUtxo                = flag.Bool("fixutxo", false, "check and fix utxo db and exit")
+	resetInconsistentState = flag.Bool("reset-inconsistent-state", false, "reset database state from inconsistent to closed, allowing recovery via resync")
+	prof                   = flag.String("prof", "", "http server binding [address]:port of the interface to profiling data /debug/pprof/ (default no profiling)")
 
 	syncChunk   = flag.Int("chunk", 100, "block chunk size for processing in bulk mode")
 	syncWorkers = flag.Int("workers", 8, "number of workers to process blocks in bulk mode")
@@ -149,6 +150,41 @@ func mainWithExitCode() int {
 			glog.Errorf("RepairRocksDB %s: %v", *dbPath, err)
 			return exitCodeFatal
 		}
+		// After repairing RocksDB, also check and reset inconsistent state if present
+		config, err := common.GetConfig(*configFile)
+		if err != nil {
+			glog.Warning("config: ", err, " - skipping inconsistent state reset")
+			return exitCodeOK
+		}
+		metrics, err = common.GetMetrics(config.CoinName)
+		if err != nil {
+			glog.Warning("metrics: ", err, " - skipping inconsistent state reset")
+			return exitCodeOK
+		}
+		if chain, mempool, err = getBlockChainWithRetry(config.CoinName, *configFile, pushSynchronizationHandler, metrics, 120); err != nil {
+			glog.Warning("rpc: ", err, " - skipping inconsistent state reset")
+			return exitCodeOK
+		}
+		index, err = db.NewRocksDB(*dbPath, *dbCache, *dbMaxOpenFiles, chain.GetChainParser(), metrics, *extendedIndex)
+		if err != nil {
+			glog.Warning("rocksDB: ", err, " - skipping inconsistent state reset")
+			return exitCodeOK
+		}
+		defer index.Close()
+		internalState, err = newInternalState(config, index, *enableSubNewTx)
+		if err != nil {
+			glog.Warning("internalState: ", err, " - skipping inconsistent state reset")
+			return exitCodeOK
+		}
+		if internalState.DbState == common.DbStateInconsistent {
+			glog.Info("internalState: resetting inconsistent state to closed after repair")
+			internalState.DbState = common.DbStateClosed
+			if err := index.StoreInternalState(internalState); err != nil {
+				glog.Warning("StoreInternalState: ", err)
+			} else {
+				glog.Info("internalState: database state reset to closed")
+			}
+		}
 		return exitCodeOK
 	}
 
@@ -214,10 +250,25 @@ func mainWithExitCode() int {
 
 	if internalState.DbState != common.DbStateClosed {
 		if internalState.DbState == common.DbStateInconsistent {
-			glog.Error("internalState: database is in inconsistent state and cannot be used")
-			return exitCodeFatal
+			if *resetInconsistentState {
+				glog.Warning("internalState: database was in inconsistent state, resetting to closed state to allow recovery")
+				internalState.DbState = common.DbStateClosed
+				if err := index.StoreInternalState(internalState); err != nil {
+					glog.Error("StoreInternalState: ", err)
+					return exitCodeFatal
+				}
+				glog.Warning("internalState: database state reset to closed. Run with -sync to resync and fix any inconsistencies.")
+			} else {
+				glog.Error("internalState: database is in inconsistent state and cannot be used")
+				glog.Error("internalState: database was likely interrupted during bulk import (e.g., killed by OOM killer)")
+				glog.Error("internalState: to recover, run with --repair flag (repairs DB and resets state), or --reset-inconsistent-state flag (only resets state)")
+				glog.Error("internalState: then resync with --sync to fix any inconsistencies")
+				glog.Error("internalState: alternatively, delete the database and reimport")
+				return exitCodeFatal
+			}
+		} else {
+			glog.Warning("internalState: database was left in open state, possibly previous ungraceful shutdown")
 		}
-		glog.Warning("internalState: database was left in open state, possibly previous ungraceful shutdown")
 	}
 
 	if *computeFeeStatsFlag {
