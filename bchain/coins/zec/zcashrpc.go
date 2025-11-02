@@ -117,12 +117,20 @@ func (z *ZCashRPC) GetChainInfo() (*bchain.ChainInfo, error) {
 
 // GetBlock returns block with given hash.
 func (z *ZCashRPC) GetBlock(hash string, height uint32) (*bchain.Block, error) {
+	type rpcBlock struct {
+		bchain.BlockHeader
+		Txs []bchain.Tx `json:"tx"`
+	}
 	type rpcBlockTxids struct {
 		Txids []string `json:"tx"`
 	}
 	type resGetBlockV1 struct {
 		Error  *bchain.RPCError `json:"error"`
 		Result rpcBlockTxids    `json:"result"`
+	}
+	type resGetBlockV2 struct {
+		Error  *bchain.RPCError `json:"error"`
+		Result rpcBlock         `json:"result"`
 	}
 
 	var err error
@@ -134,6 +142,7 @@ func (z *ZCashRPC) GetBlock(hash string, height uint32) (*bchain.Block, error) {
 	}
 
 	var rawResponse json.RawMessage
+	resV2 := resGetBlockV2{}
 	req := btc.CmdGetBlock{Method: "getblock"}
 	req.Params.BlockHash = hash
 	req.Params.Verbosity = 2
@@ -143,39 +152,17 @@ func (z *ZCashRPC) GetBlock(hash string, height uint32) (*bchain.Block, error) {
 	}
 	// hack for ZCash, where the field "valueZat" is used instead of "valueSat"
 	rawResponse = bytes.ReplaceAll(rawResponse, []byte(`"valueZat"`), []byte(`"valueSat"`))
-
-	// Parse the response to get block header and raw transaction JSON
-	type rpcBlockWithRawTxs struct {
-		bchain.BlockHeader
-		Txs []json.RawMessage `json:"tx"`
-	}
-	type resGetBlockV2Raw struct {
-		Error  *bchain.RPCError   `json:"error"`
-		Result rpcBlockWithRawTxs `json:"result"`
-	}
-	resV2Raw := resGetBlockV2Raw{}
-	err = json.Unmarshal(rawResponse, &resV2Raw)
+	err = json.Unmarshal(rawResponse, &resV2)
 	if err != nil {
 		return nil, errors.Annotatef(err, "hash %v", hash)
 	}
 
-	if resV2Raw.Error != nil {
-		return nil, errors.Annotatef(resV2Raw.Error, "hash %v", hash)
+	if resV2.Error != nil {
+		return nil, errors.Annotatef(resV2.Error, "hash %v", hash)
 	}
-
-	// Parse each transaction through ParseTxFromJson to calculate shielded pool values
-	parsedTxs := make([]bchain.Tx, len(resV2Raw.Result.Txs))
-	for i, rawTx := range resV2Raw.Result.Txs {
-		tx, err := z.Parser.ParseTxFromJson(rawTx)
-		if err != nil {
-			return nil, errors.Annotatef(err, "hash %v, tx index %d", hash, i)
-		}
-		parsedTxs[i] = *tx
-	}
-
 	block := &bchain.Block{
-		BlockHeader: resV2Raw.Result.BlockHeader,
-		Txs:         parsedTxs,
+		BlockHeader: resV2.Result.BlockHeader,
+		Txs:         resV2.Result.Txs,
 	}
 
 	// transactions fetched in block with verbosity 2 do not contain txids, so we need to get it separately
@@ -196,13 +183,10 @@ func (z *ZCashRPC) GetBlock(hash string, height uint32) (*bchain.Block, error) {
 
 // GetTransaction returns a transaction by the transaction ID
 func (z *ZCashRPC) GetTransaction(txid string) (*bchain.Tx, error) {
-	glog.Infof("ZCash GetTransaction: fetching txid=%s", txid)
 	r, err := z.getRawTransaction(txid)
 	if err != nil {
 		return nil, err
 	}
-	// Log the raw JSON to debug shielded pool fields
-	glog.Infof("ZCash GetTransaction: raw JSON for txid=%s: %s", txid, string(r))
 	// hack for ZCash, where the field "valueZat" is used instead of "valueSat"
 	r = bytes.ReplaceAll(r, []byte(`"valueZat"`), []byte(`"valueSat"`))
 	tx, err := z.Parser.ParseTxFromJson(r)
@@ -211,14 +195,7 @@ func (z *ZCashRPC) GetTransaction(txid string) (*bchain.Tx, error) {
 	}
 	tx.Blocktime = tx.Time
 	tx.Txid = txid
-	// Don't overwrite CoinSpecificData if it was already set by the parser (contains shielded pool data)
-	// If it wasn't set, use the raw JSON as fallback
-	if tx.CoinSpecificData == nil {
-		glog.Warningf("ZCash GetTransaction: txid=%s, CoinSpecificData is nil after ParseTxFromJson!", txid)
-		tx.CoinSpecificData = r
-	} else {
-		glog.Infof("ZCash GetTransaction: txid=%s, CoinSpecificData type=%T", txid, tx.CoinSpecificData)
-	}
+	tx.CoinSpecificData = r
 	return tx, nil
 }
 
@@ -248,26 +225,6 @@ func (z *ZCashRPC) getRawTransaction(txid string) (json.RawMessage, error) {
 // It could be optimized for mempool, i.e. without block time and confirmations
 func (z *ZCashRPC) GetTransactionForMempool(txid string) (*bchain.Tx, error) {
 	return z.GetTransaction(txid)
-}
-
-// GetTransactionSpecific returns json as returned by backend, with all coin specific data
-func (z *ZCashRPC) GetTransactionSpecific(tx *bchain.Tx) (json.RawMessage, error) {
-	// Check if CoinSpecificData contains raw JSON
-	if tx.CoinSpecificData != nil {
-		if coinSpecificMap, ok := tx.CoinSpecificData.(map[string]interface{}); ok {
-			if rawJson, exists := coinSpecificMap["rawJson"]; exists {
-				if rawJsonBytes, ok := rawJson.(json.RawMessage); ok {
-					return rawJsonBytes, nil
-				}
-			}
-		}
-		// If CoinSpecificData is raw JSON, return it
-		if rawJson, ok := tx.CoinSpecificData.(json.RawMessage); ok {
-			return rawJson, nil
-		}
-	}
-	// Fallback: fetch raw transaction from backend
-	return z.getRawTransaction(tx.Txid)
 }
 
 // GetMempoolEntry returns mempool data for given transaction

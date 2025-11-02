@@ -1,18 +1,10 @@
 package zec
 
 import (
-	"encoding/binary"
-	"encoding/json"
-	"errors"
-	"math/big"
-	"strconv"
-
-	"github.com/golang/glog"
 	"github.com/martinboehm/btcd/wire"
 	"github.com/martinboehm/btcutil/chaincfg"
 	"github.com/trezor/blockbook/bchain"
 	"github.com/trezor/blockbook/bchain/coins/btc"
-	"github.com/trezor/blockbook/common"
 )
 
 const (
@@ -52,21 +44,6 @@ func init() {
 
 	RegtestParams = chaincfg.RegressionNetParams
 	RegtestParams.Net = RegtestMagic
-}
-
-// JoinSplit represents a JoinSplit description in Zcash Sprout transactions
-type JoinSplit struct {
-	VPubOld common.JSONNumber `json:"vpub_old"`
-	VPubNew common.JSONNumber `json:"vpub_new"`
-}
-
-// ZCashSpecificData contains Zcash-specific transaction fields for shielded pools
-type ZCashSpecificData struct {
-	VJoinSplit          []JoinSplit       `json:"vjoinsplit,omitempty"`
-	ValueBalance        common.JSONNumber `json:"valueBalance,omitempty"`        // Net value balance (Sapling, can be positive or negative)
-	ValueBalanceZat     common.JSONNumber `json:"valueBalanceZat,omitempty"`     // Net value balance in zatoshis
-	ValueBalanceSapling common.JSONNumber `json:"valueBalanceSapling,omitempty"` // Legacy field name (for compatibility)
-	ValueBalanceOrchard common.JSONNumber `json:"valueBalanceOrchard,omitempty"` // Orchard pool balance (if present)
 }
 
 // ZCashParser handle
@@ -109,197 +86,12 @@ func GetChainParams(chain string) *chaincfg.Params {
 	}
 }
 
-// Magic marker to identify appended shieldedPoolValue data
-var shieldedPoolValueMarker = []byte{0x5A, 0x45, 0x43, 0x31} // "ZEC1" in hex
-
 // PackTx packs transaction to byte array using protobuf
-// For Zcash, we also append the shieldedPoolValue to preserve it through cache serialization
 func (p *ZCashParser) PackTx(tx *bchain.Tx, height uint32, blockTime int64) ([]byte, error) {
-	// Pack the base transaction
-	packed, err := p.baseparser.PackTx(tx, height, blockTime)
-	if err != nil {
-		return nil, err
-	}
-
-	// Extract and append shieldedPoolValue if present
-	if tx.CoinSpecificData != nil {
-		if coinSpecificMap, ok := tx.CoinSpecificData.(map[string]interface{}); ok {
-			if shieldedPoolValue, exists := coinSpecificMap["shieldedPoolValue"]; exists {
-				if shieldedBigInt, ok := shieldedPoolValue.(*big.Int); ok {
-					// Append shieldedPoolValue as: [4-byte marker][4-byte length][big.Int bytes]
-					shieldedBytes := shieldedBigInt.Bytes()
-					lengthBytes := make([]byte, 4)
-					binary.BigEndian.PutUint32(lengthBytes, uint32(len(shieldedBytes)))
-					packed = append(packed, shieldedPoolValueMarker...)
-					packed = append(packed, lengthBytes...)
-					packed = append(packed, shieldedBytes...)
-				}
-			}
-		}
-	}
-
-	return packed, nil
+	return p.baseparser.PackTx(tx, height, blockTime)
 }
 
 // UnpackTx unpacks transaction from protobuf byte array
-// For Zcash, we also extract and restore the shieldedPoolValue if it was appended
 func (p *ZCashParser) UnpackTx(buf []byte) (*bchain.Tx, uint32, error) {
-	// Minimum size for appended data: 4 (marker) + 4 (length) = 8 bytes
-	if len(buf) < 8 {
-		return p.baseparser.UnpackTx(buf)
-	}
-
-	// Check for the magic marker at the end
-	markerStart := len(buf) - len(shieldedPoolValueMarker)
-	if markerStart < 0 {
-		return p.baseparser.UnpackTx(buf)
-	}
-
-	// Look for the marker from the end, scanning backwards
-	foundMarker := false
-	markerPos := -1
-	for i := len(buf) - len(shieldedPoolValueMarker); i >= 0; i-- {
-		if i+len(shieldedPoolValueMarker) <= len(buf) {
-			if string(buf[i:i+len(shieldedPoolValueMarker)]) == string(shieldedPoolValueMarker) {
-				foundMarker = true
-				markerPos = i
-				break
-			}
-		}
-	}
-
-	if !foundMarker {
-		// No marker found, unpack normally
-		return p.baseparser.UnpackTx(buf)
-	}
-
-	// Extract the proto data (everything before the marker)
-	protoBuf := buf[:markerPos]
-	tx, height, err := p.baseparser.UnpackTx(protoBuf)
-	if err != nil {
-		// If unpacking fails, try unpacking the whole buffer (might be old format)
-		return p.baseparser.UnpackTx(buf)
-	}
-
-	// Extract the appended shieldedPoolValue
-	// Format: [marker][4-byte length][data]
-	dataStart := markerPos + len(shieldedPoolValueMarker)
-	if dataStart+4 > len(buf) {
-		return tx, height, nil
-	}
-
-	length := binary.BigEndian.Uint32(buf[dataStart : dataStart+4])
-	if length > 32 || dataStart+4+int(length) > len(buf) {
-		// Invalid length, return transaction without CoinSpecificData
-		return tx, height, nil
-	}
-
-	shieldedBytes := buf[dataStart+4 : dataStart+4+int(length)]
-	shieldedPoolValue := new(big.Int).SetBytes(shieldedBytes)
-
-	// Restore CoinSpecificData
-	tx.CoinSpecificData = map[string]interface{}{
-		"shieldedPoolValue": shieldedPoolValue,
-	}
-
-	glog.V(2).Infof("ZCash UnpackTx: restored shieldedPoolValue=%s for txid=%s", shieldedPoolValue.String(), tx.Txid)
-
-	return tx, height, nil
-}
-
-// ParseTxFromJson parses JSON message containing transaction and returns Tx struct
-// This method extends Bitcoin's ParseTxFromJson to handle Zcash-specific shielded pool fields
-func (p *ZCashParser) ParseTxFromJson(msg json.RawMessage) (*bchain.Tx, error) {
-	// First, parse using the standard Bitcoin parser
-	tx, err := p.BitcoinLikeParser.ParseTxFromJson(msg)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse Zcash-specific fields for shielded pools
-	var zcashData ZCashSpecificData
-	err = json.Unmarshal(msg, &zcashData)
-	if err != nil {
-		return nil, err
-	}
-
-	// Calculate the shielded pool contribution to fee calculation
-	shieldedPoolValue := big.NewInt(0)
-
-	// Debug logging
-	glog.Infof("ZCash ParseTxFromJson: txid=%s, vjoinsplit=%d, valueBalance=%s, valueBalanceZat=%s, valueBalanceSapling=%s, valueBalanceOrchard=%s",
-		tx.Txid, len(zcashData.VJoinSplit), zcashData.ValueBalance, zcashData.ValueBalanceZat, zcashData.ValueBalanceSapling, zcashData.ValueBalanceOrchard)
-
-	// Process JoinSplit descriptions (Sprout shielded pool)
-	// Note: vpub_old and vpub_new are already in zatoshis, not decimal ZEC
-	for _, js := range zcashData.VJoinSplit {
-		// vpub_new: value entering transparent pool (treated as input)
-		if js.VPubNew != "" {
-			vpubNew := new(big.Int)
-			if _, ok := vpubNew.SetString(string(js.VPubNew), 10); !ok {
-				return nil, errors.New("failed to parse vpub_new")
-			}
-			shieldedPoolValue.Add(shieldedPoolValue, vpubNew)
-		}
-
-		// vpub_old: value leaving transparent pool (treated as output)
-		if js.VPubOld != "" {
-			vpubOld := new(big.Int)
-			if _, ok := vpubOld.SetString(string(js.VPubOld), 10); !ok {
-				return nil, errors.New("failed to parse vpub_old")
-			}
-			shieldedPoolValue.Sub(shieldedPoolValue, vpubOld)
-		}
-	}
-
-	// Process valueBalanceZat (primary field - value balance in zatoshis)
-	// This represents the net value balance for Sapling shielded pool
-	// Positive values = net transfer OUT of shielded pool (treated as input)
-	// Negative values = net transfer INTO shielded pool (treated as output)
-	if zcashData.ValueBalanceZat != "" {
-		valueBalance := new(big.Int)
-		if _, ok := valueBalance.SetString(string(zcashData.ValueBalanceZat), 10); !ok {
-			return nil, errors.New("failed to parse valueBalanceZat")
-		}
-		shieldedPoolValue.Add(shieldedPoolValue, valueBalance)
-	} else if zcashData.ValueBalance != "" {
-		// Fallback to valueBalance if valueBalanceZat is not present
-		// Need to convert from decimal ZEC to zatoshis (multiply by 100000000)
-		valueBalanceFloat, err := strconv.ParseFloat(string(zcashData.ValueBalance), 64)
-		if err != nil {
-			return nil, errors.New("failed to parse valueBalance as float")
-		}
-		valueBalanceSat := big.NewInt(int64(valueBalanceFloat * 100000000))
-		shieldedPoolValue.Add(shieldedPoolValue, valueBalanceSat)
-	}
-
-	// Process legacy Sapling pool balance field (for compatibility)
-	if zcashData.ValueBalanceSapling != "" {
-		saplingBalance := new(big.Int)
-		if _, ok := saplingBalance.SetString(string(zcashData.ValueBalanceSapling), 10); !ok {
-			return nil, errors.New("failed to parse valueBalanceSapling")
-		}
-		shieldedPoolValue.Add(shieldedPoolValue, saplingBalance)
-	}
-
-	// Process Orchard pool balance (already in zatoshis)
-	if zcashData.ValueBalanceOrchard != "" {
-		orchardBalance := new(big.Int)
-		if _, ok := orchardBalance.SetString(string(zcashData.ValueBalanceOrchard), 10); !ok {
-			return nil, errors.New("failed to parse valueBalanceOrchard")
-		}
-		shieldedPoolValue.Add(shieldedPoolValue, orchardBalance)
-	}
-
-	// Store the shielded pool value in CoinSpecificData for use in fee calculation
-	// We'll store both the original JSON and our calculated shielded pool value
-	coinSpecificData := map[string]interface{}{
-		"rawJson":           msg,
-		"shieldedPoolValue": shieldedPoolValue,
-	}
-	tx.CoinSpecificData = coinSpecificData
-
-	glog.Infof("ZCash ParseTxFromJson: txid=%s, final shieldedPoolValue=%s", tx.Txid, shieldedPoolValue.String())
-
-	return tx, nil
+	return p.baseparser.UnpackTx(buf)
 }

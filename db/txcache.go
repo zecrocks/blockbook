@@ -49,11 +49,9 @@ func (c *TxCache) GetTransaction(txid string) (*bchain.Tx, int, error) {
 			_, bestheight, _, _ := c.is.GetSyncState()
 			tx.Confirmations = bestheight - h + 1
 			c.metrics.TxCacheEfficiency.With(common.Labels{"status": "hit"}).Inc()
-			glog.Infof("TxCache: cache HIT for txid=%s, CoinSpecificData type=%T", txid, tx.CoinSpecificData)
 			return tx, int(h), nil
 		}
 	}
-	glog.Infof("TxCache: cache MISS for txid=%s, fetching from chain", txid)
 	tx, err = c.chain.GetTransaction(txid)
 	if err != nil {
 		return nil, 0, err
@@ -91,7 +89,6 @@ func (c *TxCache) GetTransaction(txid string) (*bchain.Tx, int, error) {
 			return nil, 0, errors.New("Unknown chain type")
 		}
 		if c.enabled {
-			glog.Infof("TxCache: storing txid=%s in cache, CoinSpecificData type=%T", tx.Txid, tx.CoinSpecificData)
 			err = c.db.PutTx(tx, h, tx.Blocktime)
 			// do not return caching error, only log it
 			if err != nil {

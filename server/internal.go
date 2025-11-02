@@ -74,7 +74,6 @@ func NewInternalServer(binding, certFiles string, db *db.RocksDB, chain bchain.B
 	serveMux.HandleFunc(path, s.index)
 	serveMux.HandleFunc(path+"admin", s.htmlTemplateHandler(s.adminIndex))
 	serveMux.HandleFunc(path+"admin/ws-limit-exceeding-ips", s.htmlTemplateHandler(s.wsLimitExceedingIPs))
-	serveMux.HandleFunc(path+"admin/delete-tx/", s.jsonHandler(s.apiDeleteTx, 0))
 	if s.chainParser.GetChainType() == bchain.ChainEthereumType {
 		serveMux.HandleFunc(path+"admin/internal-data-errors", s.htmlTemplateHandler(s.internalDataErrors))
 		serveMux.HandleFunc(path+"admin/contract-info", s.htmlTemplateHandler(s.contractInfoPage))
@@ -272,23 +271,4 @@ func (s *InternalServer) updateContracts(r *http.Request) (interface{}, error) {
 
 	}
 	return "{\"success\":\"Updated " + strconv.Itoa(len(contractInfos)) + " contracts\"}", nil
-}
-
-func (s *InternalServer) apiDeleteTx(r *http.Request, apiVersion int) (interface{}, error) {
-	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
-		return nil, api.NewAPIError("Method not allowed. Use DELETE or POST", true)
-	}
-	var txid string
-	i := strings.LastIndexByte(r.URL.Path, '/')
-	if i > 0 {
-		txid = r.URL.Path[i+1:]
-	}
-	if len(txid) == 0 {
-		return nil, api.NewAPIError("Missing txid", true)
-	}
-	err := s.db.DeleteTx(txid)
-	if err != nil {
-		return nil, api.NewAPIError("Error deleting transaction: "+err.Error(), true)
-	}
-	return map[string]string{"success": "Transaction " + txid + " deleted from cache"}, nil
 }

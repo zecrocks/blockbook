@@ -214,18 +214,6 @@ func (w *Worker) GetRawTransaction(txid string) (string, error) {
 
 // getTransaction reads transaction data from txid
 func (w *Worker) getTransaction(txid string, spendingTxs bool, specificJSON bool, addresses map[string]struct{}) (*Tx, error) {
-	// TEMPORARY: Always delete from cache and fetch fresh when serving to users via API/HTTP
-	// This ensures correct CoinSpecificData for Zcash shielded pool fee calculation
-	// TODO: Remove this once PackTx/UnpackTx properly handles CoinSpecificData in cache
-	if w.txCache != nil {
-		err := w.db.DeleteTx(txid)
-		if err != nil {
-			glog.V(2).Infof("getTransaction: error deleting txid=%s from cache (may not exist): %v", txid, err)
-		} else {
-			glog.Infof("getTransaction: deleted txid=%s from cache, will fetch fresh for API request", txid)
-		}
-	}
-
 	bchainTx, height, err := w.txCache.GetTransaction(txid)
 	if err != nil {
 		if err == bchain.ErrTxNotFound {
@@ -430,77 +418,6 @@ func (w *Worker) getTransactionFromBchainTx(bchainTx *bchain.Tx, height int, spe
 	if w.chainType == bchain.ChainBitcoinType {
 		// for coinbase transactions valIn is 0
 		feesSat.Sub(&valInSat, &valOutSat)
-
-		// Handle Zcash shielded pool values in fee calculation
-		if bchainTx.CoinSpecificData != nil {
-			glog.Infof("ZCash fee calc: txid=%s, CoinSpecificData type=%T", bchainTx.Txid, bchainTx.CoinSpecificData)
-			if coinSpecificMap, ok := bchainTx.CoinSpecificData.(map[string]interface{}); ok {
-				if shieldedPoolValue, exists := coinSpecificMap["shieldedPoolValue"]; exists {
-					if shieldedBigInt, ok := shieldedPoolValue.(*big.Int); ok {
-						glog.Infof("ZCash fee calc: txid=%s, before fee=%s, shieldedPoolValue=%s", bchainTx.Txid, feesSat.String(), shieldedBigInt.String())
-						// Add shielded pool value to the fee calculation
-						// Positive values represent net transfer out of shielded pool (treated as input)
-						// Negative values represent net transfer into shielded pool (treated as output)
-						feesSat.Add(&feesSat, shieldedBigInt)
-						glog.Infof("ZCash fee calc: txid=%s, after fee=%s", bchainTx.Txid, feesSat.String())
-					} else {
-						glog.Infof("ZCash fee calc: txid=%s, shieldedPoolValue wrong type: %T", bchainTx.Txid, shieldedPoolValue)
-					}
-				} else {
-					// Fallback: if rawJson exists, try to re-parse to get shieldedPoolValue
-					// This handles old cached transactions that don't have shieldedPoolValue
-					if rawJson, exists := coinSpecificMap["rawJson"]; exists {
-						if rawJsonBytes, ok := rawJson.(json.RawMessage); ok {
-							glog.Infof("ZCash fee calc: txid=%s, re-parsing from rawJson to get shieldedPoolValue", bchainTx.Txid)
-							// Re-parse the transaction to calculate shieldedPoolValue
-							reparsedTx, err := w.chainParser.ParseTxFromJson(rawJsonBytes)
-							if err == nil && reparsedTx != nil && reparsedTx.CoinSpecificData != nil {
-								if reparsedMap, ok := reparsedTx.CoinSpecificData.(map[string]interface{}); ok {
-									if reparsedShieldedValue, exists := reparsedMap["shieldedPoolValue"]; exists {
-										if reparsedBigInt, ok := reparsedShieldedValue.(*big.Int); ok {
-											glog.Infof("ZCash fee calc: txid=%s, before fee=%s, shieldedPoolValue=%s (from re-parse)", bchainTx.Txid, feesSat.String(), reparsedBigInt.String())
-											feesSat.Add(&feesSat, reparsedBigInt)
-											glog.Infof("ZCash fee calc: txid=%s, after fee=%s", bchainTx.Txid, feesSat.String())
-											// Update CoinSpecificData to include shieldedPoolValue for future use
-											coinSpecificMap["shieldedPoolValue"] = reparsedBigInt
-										}
-									}
-								}
-							}
-						}
-					} else {
-						glog.Infof("ZCash fee calc: txid=%s, shieldedPoolValue not found in map and no rawJson fallback", bchainTx.Txid)
-					}
-				}
-			} else {
-				glog.Infof("ZCash fee calc: txid=%s, CoinSpecificData not a map", bchainTx.Txid)
-			}
-		} else {
-			// CoinSpecificData is nil - try to fetch raw transaction JSON and re-parse
-			// This handles old cached transactions that don't have CoinSpecificData
-			glog.Infof("ZCash fee calc: txid=%s, CoinSpecificData is nil, attempting to fetch raw JSON", bchainTx.Txid)
-			rawJson, err := w.chain.GetTransactionSpecific(bchainTx)
-			if err == nil && rawJson != nil {
-				// Re-parse the transaction to calculate shieldedPoolValue
-				reparsedTx, err := w.chainParser.ParseTxFromJson(rawJson)
-				if err == nil && reparsedTx != nil && reparsedTx.CoinSpecificData != nil {
-					if reparsedMap, ok := reparsedTx.CoinSpecificData.(map[string]interface{}); ok {
-						if reparsedShieldedValue, exists := reparsedMap["shieldedPoolValue"]; exists {
-							if reparsedBigInt, ok := reparsedShieldedValue.(*big.Int); ok {
-								glog.Infof("ZCash fee calc: txid=%s, before fee=%s, shieldedPoolValue=%s (from GetTransactionSpecific)", bchainTx.Txid, feesSat.String(), reparsedBigInt.String())
-								feesSat.Add(&feesSat, reparsedBigInt)
-								glog.Infof("ZCash fee calc: txid=%s, after fee=%s", bchainTx.Txid, feesSat.String())
-								// Update CoinSpecificData for future use
-								bchainTx.CoinSpecificData = reparsedTx.CoinSpecificData
-							}
-						}
-					}
-				}
-			} else {
-				glog.Infof("ZCash fee calc: txid=%s, failed to get raw JSON: %v", bchainTx.Txid, err)
-			}
-		}
-
 		if feesSat.Sign() == -1 {
 			feesSat.SetUint64(0)
 		}
@@ -667,44 +584,6 @@ func (w *Worker) GetTransactionFromMempoolTx(mempoolTx *bchain.MempoolTx) (*Tx, 
 	if w.chainType == bchain.ChainBitcoinType {
 		// for coinbase transactions valIn is 0
 		feesSat.Sub(&valInSat, &valOutSat)
-
-		// Handle Zcash shielded pool values in fee calculation for mempool transactions
-		if mempoolTx.CoinSpecificData != nil {
-			glog.Infof("ZCash mempool fee calc: txid=%s, CoinSpecificData type=%T", mempoolTx.Txid, mempoolTx.CoinSpecificData)
-			if coinSpecificMap, ok := mempoolTx.CoinSpecificData.(map[string]interface{}); ok {
-				if shieldedPoolValue, exists := coinSpecificMap["shieldedPoolValue"]; exists {
-					if shieldedBigInt, ok := shieldedPoolValue.(*big.Int); ok {
-						glog.Infof("ZCash mempool fee calc: txid=%s, before fee=%s, shieldedPoolValue=%s", mempoolTx.Txid, feesSat.String(), shieldedBigInt.String())
-						// Add shielded pool value to the fee calculation
-						// Positive values represent net transfer out of shielded pool (treated as input)
-						// Negative values represent net transfer into shielded pool (treated as output)
-						feesSat.Add(&feesSat, shieldedBigInt)
-						glog.Infof("ZCash mempool fee calc: txid=%s, after fee=%s", mempoolTx.Txid, feesSat.String())
-					}
-				} else {
-					// Fallback: if rawJson exists, try to re-parse to get shieldedPoolValue
-					if rawJson, exists := coinSpecificMap["rawJson"]; exists {
-						if rawJsonBytes, ok := rawJson.(json.RawMessage); ok {
-							glog.Infof("ZCash mempool fee calc: txid=%s, re-parsing from rawJson to get shieldedPoolValue", mempoolTx.Txid)
-							reparsedTx, err := w.chainParser.ParseTxFromJson(rawJsonBytes)
-							if err == nil && reparsedTx != nil && reparsedTx.CoinSpecificData != nil {
-								if reparsedMap, ok := reparsedTx.CoinSpecificData.(map[string]interface{}); ok {
-									if reparsedShieldedValue, exists := reparsedMap["shieldedPoolValue"]; exists {
-										if reparsedBigInt, ok := reparsedShieldedValue.(*big.Int); ok {
-											glog.Infof("ZCash mempool fee calc: txid=%s, before fee=%s, shieldedPoolValue=%s (from re-parse)", mempoolTx.Txid, feesSat.String(), reparsedBigInt.String())
-											feesSat.Add(&feesSat, reparsedBigInt)
-											glog.Infof("ZCash mempool fee calc: txid=%s, after fee=%s", mempoolTx.Txid, feesSat.String())
-											coinSpecificMap["shieldedPoolValue"] = reparsedBigInt
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
 		if feesSat.Sign() == -1 {
 			feesSat.SetUint64(0)
 		}

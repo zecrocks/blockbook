@@ -32,10 +32,6 @@ var amounts = []struct {
 	{big.NewInt(-12345), "-0.00012345", 8, "!"},
 	{big.NewInt(12345678), "0.123456789012", 8, "0.12345678"},                       // test of truncation of too many decimal places
 	{big.NewInt(12345678), "0.0000000000000000000000000000000012345678", 1234, "!"}, // test of too big number decimal places
-	{big.NewInt(987), "9.87e-6", 8, "0.00000987"},                                    // test scientific notation (9.87 * 10^-6 * 10^8 = 987)
-	{big.NewInt(123400000), "1.234e0", 8, "1.234"},                                   // test scientific notation (1.234 * 10^0 * 10^8 = 123400000)
-	{big.NewInt(1234000000), "1.234e1", 8, "12.34"},                                  // test scientific notation (1.234 * 10^1 * 10^8 = 1234000000)
-	{big.NewInt(12), "1.234e-7", 8, "0.00000012"},                                    // test scientific notation (1.234 * 10^-7 * 10^8 = 12.34, truncated to 12)
 }
 
 func TestBaseParser_AmountToDecimalString(t *testing.T) {

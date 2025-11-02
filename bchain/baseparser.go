@@ -46,43 +46,8 @@ const zeros = "0000000000000000000000000000000000000000"
 func (p *BaseParser) AmountToBigInt(n common.JSONNumber) (big.Int, error) {
 	var r big.Int
 	s := string(n)
-
-	// Trim whitespace
-	s = strings.TrimSpace(s)
-
-	// Handle empty string or null as zero
-	if s == "" || s == "null" {
-		return r, nil
-	}
-
-	// Handle scientific notation (e.g., "9.87e-6")
-	if strings.ContainsAny(s, "eE") {
-		// Use big.Float with high precision to handle scientific notation, then convert to big.Int
-		// Set precision to 256 bits to avoid rounding errors
-		f := new(big.Float).SetPrec(256)
-		if _, ok := f.SetString(s); !ok {
-			return r, errors.Errorf("AmountToBigInt: failed to parse scientific notation %q", s)
-		}
-		
-		// Multiply by 10^AmountDecimalPoint to get the integer representation
-		d := p.AmountDecimalPoint
-		multiplier := new(big.Float).SetPrec(256).SetInt64(1)
-		ten := new(big.Float).SetPrec(256).SetInt64(10)
-		for i := 0; i < d; i++ {
-			multiplier.Mul(multiplier, ten)
-		}
-		f.Mul(f, multiplier)
-		
-		// Convert to big.Int (truncating any remaining decimals)
-		f.Int(&r)
-		return r, nil
-	}
-
 	i := strings.IndexByte(s, '.')
-	d := p.AmountDecimalPoint
-	if d > len(zeros) {
-		d = len(zeros)
-	}
+	d := min(p.AmountDecimalPoint, len(zeros))
 	if i == -1 {
 		s = s + zeros[:d]
 	} else {
@@ -94,7 +59,7 @@ func (p *BaseParser) AmountToBigInt(n common.JSONNumber) (big.Int, error) {
 		}
 	}
 	if _, ok := r.SetString(s, 10); !ok {
-		return r, errors.Errorf("AmountToBigInt: failed to convert value %q (original: %q)", s, string(n))
+		return r, errors.New("AmountToBigInt: failed to convert")
 	}
 	return r, nil
 }
@@ -154,7 +119,7 @@ func (p *BaseParser) ParseTxFromJson(msg json.RawMessage) (*Tx, error) {
 		// convert vout.JsonValue to big.Int and clear it, it is only temporary value used for unmarshal
 		vout.ValueSat, err = p.AmountToBigInt(vout.JsonValue)
 		if err != nil {
-			return nil, errors.Annotatef(err, "vout index %d", i)
+			return nil, err
 		}
 		vout.JsonValue = ""
 	}
