@@ -59,6 +59,68 @@ func NewWorker(db *db.RocksDB, chain bchain.BlockChain, mempool bchain.Mempool, 
 	return w, nil
 }
 
+// zcashShieldedPoolData represents ZCash shielded pool fields from raw transaction JSON
+type zcashShieldedPoolData struct {
+	VJoinSplit []struct {
+		VPubOld json.Number `json:"vpub_old"`
+		VPubNew json.Number `json:"vpub_new"`
+	} `json:"vjoinsplit,omitempty"`
+	ValueBalanceSapling json.Number `json:"valueBalanceSapling,omitempty"`
+	ValueBalanceOrchard json.Number `json:"valueBalanceOrchard,omitempty"`
+}
+
+// getZcashShieldedPoolValue extracts the net shielded pool value from ZCash transaction raw JSON.
+// Returns the adjustment to add to the fee calculation (positive = net out of shielded pool).
+// This handles Sprout (JoinSplit), Sapling, and Orchard shielded pools.
+func getZcashShieldedPoolValue(coinSpecificData interface{}) (*big.Int, error) {
+	// Check if CoinSpecificData is raw JSON (which it is for ZCash)
+	rawJSON, ok := coinSpecificData.(json.RawMessage)
+	if !ok {
+		return nil, nil // Not ZCash or no data
+	}
+
+	var zcashData zcashShieldedPoolData
+	if err := json.Unmarshal(rawJSON, &zcashData); err != nil {
+		return nil, nil // Parsing failed, not critical
+	}
+
+	shieldedValue := big.NewInt(0)
+
+	// Process JoinSplit descriptions (Sprout shielded pool)
+	// vpub_new: value entering transparent pool from shielded (treated as input)
+	// vpub_old: value leaving transparent pool to shielded (treated as output)
+	for _, js := range zcashData.VJoinSplit {
+		if js.VPubNew != "" {
+			if vpubNew, ok := new(big.Int).SetString(string(js.VPubNew), 10); ok {
+				shieldedValue.Add(shieldedValue, vpubNew)
+			}
+		}
+		if js.VPubOld != "" {
+			if vpubOld, ok := new(big.Int).SetString(string(js.VPubOld), 10); ok {
+				shieldedValue.Sub(shieldedValue, vpubOld)
+			}
+		}
+	}
+
+	// Process Sapling pool balance
+	// Positive: net transfer OUT of shielded pool (treated as input)
+	// Negative: net transfer INTO shielded pool (treated as output)
+	if zcashData.ValueBalanceSapling != "" {
+		if saplingBalance, ok := new(big.Int).SetString(string(zcashData.ValueBalanceSapling), 10); ok {
+			shieldedValue.Add(shieldedValue, saplingBalance)
+		}
+	}
+
+	// Process Orchard pool balance (same logic as Sapling)
+	if zcashData.ValueBalanceOrchard != "" {
+		if orchardBalance, ok := new(big.Int).SetString(string(zcashData.ValueBalanceOrchard), 10); ok {
+			shieldedValue.Add(shieldedValue, orchardBalance)
+		}
+	}
+
+	return shieldedValue, nil
+}
+
 func (w *Worker) getAddressesFromVout(vout *bchain.Vout) (bchain.AddressDescriptor, []string, bool, error) {
 	addrDesc, err := w.chainParser.GetAddrDescFromVout(vout)
 	if err != nil {
@@ -418,6 +480,13 @@ func (w *Worker) getTransactionFromBchainTx(bchainTx *bchain.Tx, height int, spe
 	if w.chainType == bchain.ChainBitcoinType {
 		// for coinbase transactions valIn is 0
 		feesSat.Sub(&valInSat, &valOutSat)
+
+		// Adjust fee for ZCash shielded pool transfers
+		// Shielded pool values represent additional inputs/outputs that affect the fee calculation
+		if shieldedPoolValue, err := getZcashShieldedPoolValue(bchainTx.CoinSpecificData); err == nil && shieldedPoolValue != nil {
+			feesSat.Add(&feesSat, shieldedPoolValue)
+		}
+
 		if feesSat.Sign() == -1 {
 			feesSat.SetUint64(0)
 		}
@@ -584,6 +653,13 @@ func (w *Worker) GetTransactionFromMempoolTx(mempoolTx *bchain.MempoolTx) (*Tx, 
 	if w.chainType == bchain.ChainBitcoinType {
 		// for coinbase transactions valIn is 0
 		feesSat.Sub(&valInSat, &valOutSat)
+
+		// Adjust fee for ZCash shielded pool transfers
+		// Shielded pool values represent additional inputs/outputs that affect the fee calculation
+		if shieldedPoolValue, err := getZcashShieldedPoolValue(mempoolTx.CoinSpecificData); err == nil && shieldedPoolValue != nil {
+			feesSat.Add(&feesSat, shieldedPoolValue)
+		}
+
 		if feesSat.Sign() == -1 {
 			feesSat.SetUint64(0)
 		}
